@@ -16,6 +16,16 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+### Google Maps (zone maps)
+
+The dashboard shows real Google Maps when you open a zone’s location detail. To enable them:
+
+1. Copy `.env.local.example` to `.env.local`.
+2. Add your [Google Maps JavaScript API](https://console.cloud.google.com/apis/credentials) key as `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`.
+3. Enable the **Maps JavaScript API** for your Google Cloud project.
+
+Without the key, zone maps show a placeholder and a short hint.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
