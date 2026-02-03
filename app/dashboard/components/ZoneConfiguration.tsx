@@ -19,7 +19,7 @@ export function ZoneConfiguration({ data, onSave }: ZoneConfigurationProps) {
     setLat(data.lat);
     setLng(data.lng);
     setTotalCapacity(data.totalCapacity);
-    setZones(data.zones);
+    setZones(data.zones.map((z) => ({ ...z, cameras: z.cameras ?? [] })));
   }, [data.lat, data.lng, data.totalCapacity, data.zones]);
 
   const updateZone = (id: string, field: keyof ZoneFormEntry, value: string) => {
@@ -36,6 +36,7 @@ export function ZoneConfiguration({ data, onSave }: ZoneConfigurationProps) {
         name: "",
         zoneType: "Indoor",
         maxCapacity: "",
+        cameras: [],
       },
     ]);
   };

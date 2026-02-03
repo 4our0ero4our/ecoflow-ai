@@ -15,6 +15,7 @@ export type ZoneForHeatmap = {
 
 const HEATMAP_LOADER_ID = "ecoflow-google-maps";
 const MAP_CONTAINER_STYLE = { width: "100%", height: "100%" };
+const GOOGLE_MAPS_LIBRARIES: ("visualization")[] = ["visualization"];
 
 /** Gradient: green (not crowded) → yellow → orange → red (crowded) */
 const DENSITY_GRADIENT = [
@@ -84,7 +85,7 @@ export function ZoneHeatmapMap({
   const { isLoaded, loadError } = useJsApiLoader({
     id: HEATMAP_LOADER_ID,
     googleMapsApiKey: apiKey,
-    libraries: ["visualization"],
+    libraries: GOOGLE_MAPS_LIBRARIES,
   });
 
   /** The center of the zones */
@@ -125,6 +126,14 @@ export function ZoneHeatmapMap({
     () => zones.find((z) => z.id === selectedZoneId),
     [zones, selectedZoneId]
   );
+
+  // These hooks must be called before any early returns to maintain hook order
+  const mapCenter = useMemo(() => {
+    return selectedZone ? { lat: selectedZone.lat, lng: selectedZone.lng } : center;
+  }, [selectedZone, center]);
+
+  // Create a stable key based on zone IDs to force re-render when zones change significantly
+  const zonesKey = useMemo(() => zones.map(z => z.id).sort().join('-'), [zones]);
 
   if (!apiKey) {
     return (
@@ -182,8 +191,9 @@ export function ZoneHeatmapMap({
   return (
     <div className={`relative aspect-video w-full overflow-hidden rounded-xl border border-slate-200 ${className}`}>
       <GoogleMap
+        key={`map-${zonesKey}`}
         mapContainerStyle={MAP_CONTAINER_STYLE}
-        center={selectedZone ? { lat: selectedZone.lat, lng: selectedZone.lng } : center}
+        center={mapCenter}
         zoom={16}
         options={mapOptions}
       >

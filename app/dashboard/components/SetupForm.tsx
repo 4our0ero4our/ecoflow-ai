@@ -12,7 +12,11 @@ import {
   ChevronRight,
   Check,
   Sparkles,
+  TestTube2,
+  Video,
 } from "lucide-react";
+import { createOrganization, createZone, createCamera } from "../../lib/api";
+import { useCustomAlert } from "../../components/CustomAlert";
 
 export const VENUE_TYPES = ["Stadium", "Hotel", "Airport", "Mall", "Outdoor Park"] as const;
 export const IOT_SOURCES = ["CCTV / Computer Vision", "Wi-Fi Counters", "Turnstiles", "Manual Entry"] as const;
@@ -20,11 +24,17 @@ export const REFRESH_RATES = ["Real-time / Stream", "Every 5 mins", "Every 15 mi
 export const HVAC_TYPES = ["Manual", "BMS API", "Smart Thermostat"] as const;
 export const ENERGY_SOURCES = ["Grid", "Solar", "Hybrid"] as const;
 
+export type CameraFormEntry = {
+  id: string;
+  name: string;
+};
+
 export type ZoneFormEntry = {
   id: string;
   name: string;
   zoneType: "Indoor" | "Outdoor";
   maxCapacity: string;
+  cameras: CameraFormEntry[];
 };
 
 export type SetupFormData = {
@@ -47,7 +57,7 @@ const INITIAL_FORM: SetupFormData = {
   lat: "",
   lng: "",
   totalCapacity: "",
-  zones: [{ id: "z1", name: "", zoneType: "Indoor", maxCapacity: "" }],
+  zones: [{ id: "z1", name: "", zoneType: "Indoor", maxCapacity: "", cameras: [] }],
   iotSource: "",
   refreshRate: "",
   hvacControl: "",
@@ -55,22 +65,17 @@ const INITIAL_FORM: SetupFormData = {
   energySource: "",
 };
 
-export const ADMIN_SETTINGS_STORAGE_KEY = "ecoflow-admin-settings";
-
-/** Qiddiya demo data — matches ZONE_GRID names and coordinates; default for dashboard settings */
-export const DEMO_DATA: SetupFormData = {
-  organizationName: "Qiddiya Main Hub",
-  venueType: "Outdoor Park",
+/** Test data to fill the form for testing POST /organizations/, POST /zones/, POST /cameras/ */
+export const TEST_ORGANIZATION_FORM: SetupFormData = {
+  organizationName: "Tech Corp HQ",
+  venueType: "Mall",
   lat: "24.759",
   lng: "46.7386",
-  totalCapacity: "50000",
+  totalCapacity: "500",
   zones: [
-    { id: "d1", name: "Main Plaza", zoneType: "Outdoor", maxCapacity: "5000" },
-    { id: "d2", name: "North Gate", zoneType: "Outdoor", maxCapacity: "2000" },
-    { id: "d3", name: "Food Court", zoneType: "Indoor", maxCapacity: "1500" },
-    { id: "d4", name: "East Wing", zoneType: "Indoor", maxCapacity: "2200" },
-    { id: "d5", name: "Concert Hall", zoneType: "Indoor", maxCapacity: "4000" },
-    { id: "d6", name: "VIP Lounge", zoneType: "Indoor", maxCapacity: "200" },
+    { id: "z-test-1", name: "Lobby", zoneType: "Indoor", maxCapacity: "50", cameras: [{ id: "c-1", name: "Front Desk Cam" }] },
+    { id: "z-test-2", name: "Main Hall", zoneType: "Indoor", maxCapacity: "200", cameras: [{ id: "c-2", name: "Hall Cam A" }, { id: "c-3", name: "Hall Cam B" }] },
+    { id: "z-test-3", name: "Outdoor Plaza", zoneType: "Outdoor", maxCapacity: "250", cameras: [{ id: "c-4", name: "Plaza Cam" }] },
   ],
   iotSource: "CCTV / Computer Vision",
   refreshRate: "Real-time / Stream",
@@ -78,6 +83,8 @@ export const DEMO_DATA: SetupFormData = {
   baselineKwh: "85000",
   energySource: "Hybrid",
 };
+
+export const ADMIN_SETTINGS_STORAGE_KEY = "ecoflow-admin-settings";
 
 const STEPS = [
   { title: "Organization & Location", icon: Building2 },
@@ -88,7 +95,9 @@ const STEPS = [
 
 export function SetupForm() {
   const router = useRouter();
+  const { showAlert } = useCustomAlert();
   const [step, setStep] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [form, setForm] = useState<SetupFormData>(INITIAL_FORM);
 
   const update = (key: keyof SetupFormData, value: string | ZoneFormEntry[]) => {
@@ -105,8 +114,42 @@ export function SetupForm() {
           name: "",
           zoneType: "Indoor",
           maxCapacity: "",
+          cameras: [],
         },
       ],
+    }));
+  };
+
+  const addCameraToZone = (zoneId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      zones: prev.zones.map((z) =>
+        z.id === zoneId
+          ? { ...z, cameras: [...(z.cameras || []), { id: `c-${Date.now()}`, name: "" }] }
+          : z
+      ),
+    }));
+  };
+
+  const removeCameraFromZone = (zoneId: string, cameraId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      zones: prev.zones.map((z) =>
+        z.id === zoneId
+          ? { ...z, cameras: (z.cameras || []).filter((c) => c.id !== cameraId) }
+          : z
+      ),
+    }));
+  };
+
+  const updateCamera = (zoneId: string, cameraId: string, field: "name", value: string) => {
+    setForm((prev) => ({
+      ...prev,
+      zones: prev.zones.map((z) =>
+        z.id === zoneId
+          ? { ...z, cameras: (z.cameras || []).map((c) => (c.id === cameraId ? { ...c, [field]: value } : c)) }
+          : z
+      ),
     }));
   };
 
@@ -122,9 +165,7 @@ export function SetupForm() {
     }));
   };
 
-  const useDemoData = () => {
-    setForm(DEMO_DATA);
-  };
+  // Removed demo data function
 
   const canNext = () => {
     if (step === 0) {
@@ -139,18 +180,96 @@ export function SetupForm() {
     return true;
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
     try {
+      const lat = parseFloat(form.lat);
+      const lng = parseFloat(form.lng);
+      const totalCapacity = parseInt(form.totalCapacity, 10) || 0;
+      if (Number.isNaN(lat) || Number.isNaN(lng) || totalCapacity <= 0) {
+        showAlert("Please enter valid latitude, longitude, and total capacity.", "error");
+        setIsSubmitting(false);
+        return;
+      }
+
+      // 1) POST /organizations/ — send all org fields the API expects
+      const orgPayload = {
+        name: form.organizationName.trim(),
+        org_type: form.venueType,
+        total_capacity: totalCapacity,
+        latitude: lat,
+        longitude: lng,
+      };
+      let createdOrg: any;
+      try {
+        createdOrg = await createOrganization(orgPayload);
+      } catch (err: any) {
+        throw new Error(`Organization: ${err.message || "Request failed"}`);
+      }
+      const orgId = createdOrg?.id ?? createdOrg?.data?.id;
+      if (typeof orgId !== "number") {
+        throw new Error("Organization was created but no id returned. Response: " + JSON.stringify(createdOrg || {}));
+      }
+
+      // 2) POST /zones/ for every zone, then POST /cameras/ for every camera in that zone
+      const zoneTypeToApi = (t: string) => (t === "Outdoor" ? "Outdoor" : "Entrance");
+      for (let i = 0; i < form.zones.length; i++) {
+        const zone = form.zones[i];
+        const capacity = parseInt(zone.maxCapacity, 10) || 0;
+        if (!zone.name.trim()) {
+          continue; // skip zones with no name
+        }
+        if (capacity <= 0) {
+          throw new Error(`Zone "${zone.name}" must have a positive max capacity.`);
+        }
+        let createdZone: any;
+        try {
+          createdZone = await createZone({
+            name: zone.name.trim(),
+            zone_type: zoneTypeToApi(zone.zoneType),
+            capacity,
+            latitude: lat,
+            longitude: lng,
+            organization_id: orgId,
+          });
+        } catch (err: any) {
+          throw new Error(`Zone "${zone.name}": ${err.message || "Request failed"}`);
+        }
+        const zoneId = createdZone?.id ?? createdZone?.data?.id;
+        const cameras = zone.cameras || [];
+        if (typeof zoneId === "number") {
+          for (const cam of cameras) {
+            if (!cam.name?.trim()) continue;
+            try {
+              await createCamera({
+                name: cam.name.trim(),
+                is_active: true,
+                zone_id: zoneId,
+              });
+            } catch (err: any) {
+              throw new Error(`Camera "${cam.name}" (zone ${zone.name}): ${err.message || "Request failed"}`);
+            }
+          }
+        }
+      }
+
       localStorage.setItem(ADMIN_SETTINGS_STORAGE_KEY, JSON.stringify(form));
-    } catch (e) {
-      console.warn("Could not persist admin settings", e);
+      router.push("/dashboard");
+    } catch (e: any) {
+      console.warn("Setup submit error", e);
+      showAlert(e.message || "Failed to save. Check the console for details.", "error");
+    } finally {
+      setIsSubmitting(false);
     }
-    router.push("/dashboard");
+  };
+
+  const fillWithTestData = () => {
+    setForm({ ...TEST_ORGANIZATION_FORM });
   };
 
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6">
-      {/* Header + Demo Data */}
+      {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
@@ -171,11 +290,12 @@ export function SetupForm() {
         </div>
         <button
           type="button"
-          onClick={useDemoData}
-          className="flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100"
+          onClick={fillWithTestData}
+          className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 shadow-sm transition hover:bg-amber-100"
+          title="Fill all steps with test data for testing POST /organizations/ and POST /zones/"
         >
-          <Sparkles className="h-4 w-4" aria-hidden />
-          Use Demo Data (Qiddiya)
+          <TestTube2 className="h-4 w-4" aria-hidden />
+          Fill with test data
         </button>
       </motion.div>
 
@@ -186,11 +306,10 @@ export function SetupForm() {
             key={s.title}
             type="button"
             onClick={() => setStep(i)}
-            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
-              step === i
-                ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-            }`}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${step === i
+              ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+              : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              }`}
           >
             <s.icon className="h-4 w-4" aria-hidden />
             {s.title}
@@ -352,6 +471,48 @@ export function SetupForm() {
                         />
                       </div>
                     </div>
+                    {/* Cameras for this zone */}
+                    <div className="mt-4 border-t border-slate-200/80 pt-4">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          <Video className="h-3.5 w-3.5" aria-hidden />
+                          Cameras
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => addCameraToZone(zone.id)}
+                          className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          <Plus className="h-3.5 w-3.5" aria-hidden />
+                          Add camera
+                        </button>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {(zone.cameras || []).length === 0 ? (
+                          <p className="text-xs text-slate-400">No cameras. Add one to register with this zone.</p>
+                        ) : (
+                          (zone.cameras || []).map((cam) => (
+                            <div key={cam.id} className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={cam.name}
+                                onChange={(e) => updateCamera(zone.id, cam.id, "name", e.target.value)}
+                                placeholder="e.g. Front Desk Cam"
+                                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeCameraFromZone(zone.id, cam.id)}
+                                className="rounded p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                                aria-label="Remove camera"
+                              >
+                                <Trash2 className="h-4 w-4" aria-hidden />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -482,11 +643,20 @@ export function SetupForm() {
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={!canNext()}
+            disabled={!canNext() || isSubmitting}
             className="flex items-center gap-2 rounded-xl border border-emerald-400 bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-colors hover:bg-emerald-600 disabled:opacity-50 disabled:hover:bg-emerald-500"
           >
-            <Check className="h-4 w-4" aria-hidden />
-            Save setup
+            {isSubmitting ? (
+              <>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <Check className="h-4 w-4" aria-hidden />
+                Save setup
+              </>
+            )}
           </button>
         )}
       </div>

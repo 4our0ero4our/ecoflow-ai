@@ -19,6 +19,7 @@ export type ZoneMapProps = {
 };
 
 const mapContainerStyle = { width: "100%", height: "100%" };
+const GOOGLE_MAPS_LIBRARIES: ("visualization")[] = ["visualization"];
 const mapOptions: google.maps.MapOptions = {
   disableDefaultUI: true,
   zoomControl: false,
@@ -48,7 +49,7 @@ export function ZoneMap({
   const { isLoaded, loadError } = useJsApiLoader({
     id: "ecoflow-google-maps",
     googleMapsApiKey: apiKey,
-    libraries: ["visualization"],
+    libraries: GOOGLE_MAPS_LIBRARIES,
   });
 
   const center = useMemo(() => ({ lat, lng }), [lat, lng]);

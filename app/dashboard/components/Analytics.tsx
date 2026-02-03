@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BarChart3, X, Route } from "lucide-react";
+import { BarChart3, X, Route, Leaf } from "lucide-react";
 
 /** Single point for time-series charts (replace with API data later) */
 export type TimeSeriesPoint = {
@@ -33,13 +33,22 @@ export type ActiveRoute = {
   statusVariant: "resolved" | "auto-rerouted" | "acknowledged";
 };
 
+/** Carbon stats from API (summary only; no time-series in current API) */
+export type CarbonStatsSummary = {
+  average_per_detection?: number;
+  total_saved_all_time?: number;
+  [key: string]: unknown;
+};
+
 export type AnalyticsProps = {
-  /** Crowd density by hour (0–23). If not provided, mock data is used. */
+  /** Crowd density by hour (0–23). If not provided, sample trend is shown (no API). */
   densityTrendData?: DensityTrendData;
-  /** Energy and carbon by hour. If not provided, mock data is used. */
+  /** Energy and carbon by hour. If not provided, sample trend is shown (no API). */
   energyCarbonData?: EnergyCarbonData;
-  /** Active routes / events list. If not provided, mock data is used. */
+  /** Active routes / events — use real alerts from API when provided. */
   activeRoutes?: ActiveRoute[];
+  /** Real carbon summary from API (total_saved_all_time, average_per_detection). */
+  carbonStats?: CarbonStatsSummary | null;
 };
 
 /** Mock density trend: rough curve 0–100 over 0–22h */
@@ -118,11 +127,14 @@ function defaultActiveRoutes(): ActiveRoute[] {
 export function Analytics({
   densityTrendData,
   energyCarbonData,
-  activeRoutes = defaultActiveRoutes(),
+  activeRoutes,
+  carbonStats,
 }: AnalyticsProps) {
   const density = densityTrendData ?? defaultDensityTrend();
   const energyCarbon = energyCarbonData ?? defaultEnergyCarbon();
+  const routes = activeRoutes ?? defaultActiveRoutes();
   const [selectedRoute, setSelectedRoute] = useState<ActiveRoute | null>(null);
+  const hasRealCarbon = carbonStats != null && (carbonStats.total_saved_all_time != null || carbonStats.average_per_detection != null);
 
   const energyPoints = energyCarbon.map((p) => ({ hour: p.hour, value: p.energy }));
   const carbonPoints = energyCarbon.map((p) => ({ hour: p.hour, value: p.carbon }));
@@ -154,6 +166,38 @@ export function Analytics({
         </div>
       </motion.div>
 
+      {/* Real Carbon Summary (from API) */}
+      {hasRealCarbon && (
+        <motion.section
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.02 }}
+          className="flex flex-wrap items-center gap-4 rounded-2xl border border-slate-200/50 bg-white/80 p-4 shadow-lg shadow-slate-200/30 backdrop-blur-md"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-100/80 text-emerald-600 ring-1 ring-emerald-200/50">
+            <Leaf className="h-5 w-5" aria-hidden />
+          </span>
+          <div className="flex flex-wrap items-center gap-6">
+            {carbonStats?.total_saved_all_time != null && (
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Carbon saved (all time)</p>
+                <p className="text-lg font-semibold text-slate-800">
+                  {Number(carbonStats.total_saved_all_time).toFixed(1)} kg CO₂
+                </p>
+              </div>
+            )}
+            {carbonStats?.average_per_detection != null && (
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Avg efficiency per detection</p>
+                <p className="text-lg font-semibold text-slate-800">
+                  {(Number(carbonStats.average_per_detection) * 100).toFixed(0)}%
+                </p>
+              </div>
+            )}
+          </div>
+        </motion.section>
+      )}
+
       {/* Charts row */}
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         {/* Crowd Density Trends — area chart */}
@@ -165,10 +209,12 @@ export function Analytics({
         >
           <div className="border-b border-slate-200/80 px-5 py-4">
             <h2 className="text-sm font-semibold tracking-tight text-slate-800">
-              Crowd Density Trends
+              Crowd Density / Activity by Hour
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Density over time (0–22h)
+              {densityTrendData != null && densityTrendData.length > 0
+                ? "Derived from alert timestamps (relative activity 0–100)"
+                : "Sample trend (no density-by-hour API)"}
             </p>
           </div>
           <div className="p-4">
@@ -291,6 +337,11 @@ export function Analytics({
           <h2 className="text-sm font-semibold tracking-tight text-slate-800">
             Active Routes
           </h2>
+          {activeRoutes != null && (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+              Real data (alerts)
+            </span>
+          )}
         </div>
         <div className="min-w-0 overflow-x-auto">
           <table className="w-full min-w-[500px]">
@@ -314,51 +365,59 @@ export function Analytics({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/80">
-              {activeRoutes.map((route) => (
-                <tr
-                  key={route.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedRoute(route)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setSelectedRoute(route);
-                    }
-                  }}
-                  className="cursor-pointer transition-colors hover:bg-slate-50/80"
-                >
-                  <td className="px-5 py-3 text-sm text-slate-600">{route.timestamp}</td>
-                  <td className="px-5 py-3 text-sm font-medium text-slate-800">{route.type}</td>
-                  <td className="px-5 py-3 text-sm text-slate-600">{route.zone}</td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={`text-sm font-semibold ${
-                        route.deviationVariant === "red"
-                          ? "text-rose-600"
-                          : route.deviationVariant === "amber"
-                            ? "text-amber-600"
-                            : "text-emerald-600"
-                      }`}
-                    >
-                      {route.deviation}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3">
-                    <span
-                      className={`text-sm font-semibold ${
-                        route.statusVariant === "resolved"
-                          ? "text-emerald-600"
-                          : route.statusVariant === "auto-rerouted"
-                            ? "text-amber-600"
-                            : "text-blue-600"
-                      }`}
-                    >
-                      {route.status}
-                    </span>
+              {routes.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-5 py-8 text-center text-sm text-slate-500">
+                    {activeRoutes != null ? "No alerts (real data)." : "No events."}
                   </td>
                 </tr>
-              ))}
+              ) : (
+                routes.map((route) => (
+                  <tr
+                    key={route.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedRoute(route)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedRoute(route);
+                      }
+                    }}
+                    className="cursor-pointer transition-colors hover:bg-slate-50/80"
+                  >
+                    <td className="px-5 py-3 text-sm text-slate-600">{route.timestamp}</td>
+                    <td className="px-5 py-3 text-sm font-medium text-slate-800">{route.type}</td>
+                    <td className="px-5 py-3 text-sm text-slate-600">{route.zone}</td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`text-sm font-semibold ${
+                          route.deviationVariant === "red"
+                            ? "text-rose-600"
+                            : route.deviationVariant === "amber"
+                              ? "text-amber-600"
+                              : "text-emerald-600"
+                        }`}
+                      >
+                        {route.deviation}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3">
+                      <span
+                        className={`text-sm font-semibold ${
+                          route.statusVariant === "resolved"
+                            ? "text-emerald-600"
+                            : route.statusVariant === "auto-rerouted"
+                              ? "text-amber-600"
+                              : "text-blue-600"
+                        }`}
+                      >
+                        {route.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

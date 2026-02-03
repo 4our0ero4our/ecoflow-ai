@@ -10,24 +10,32 @@ import {
   HVAC_TYPES,
   ENERGY_SOURCES,
 } from "./SetupForm";
+import { updateOrganization } from "../../lib/api";
+import { useCustomAlert } from "../../components/CustomAlert";
 
 type AdminSettingsProps = {
   data: SetupFormData;
-  onSave: (data: Omit<SetupFormData, "lat" | "lng" | "totalCapacity" | "zones">) => void;
+  /** Organization ID to update on backend (e.g. 9). When set, Save calls PUT /organizations/:id/ */
+  orgId?: number;
+  onSave: (data: Partial<SetupFormData>) => void;
 };
 
-export function AdminSettings({ data, onSave }: AdminSettingsProps) {
+export function AdminSettings({ data, orgId, onSave }: AdminSettingsProps) {
+  const { showAlert } = useCustomAlert();
   const [organizationName, setOrganizationName] = useState(data.organizationName);
   const [venueType, setVenueType] = useState(data.venueType);
+  const [totalCapacity, setTotalCapacity] = useState(data.totalCapacity);
   const [iotSource, setIotSource] = useState(data.iotSource);
   const [refreshRate, setRefreshRate] = useState(data.refreshRate);
   const [hvacControl, setHvacControl] = useState(data.hvacControl);
   const [baselineKwh, setBaselineKwh] = useState(data.baselineKwh);
   const [energySource, setEnergySource] = useState(data.energySource);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setOrganizationName(data.organizationName);
     setVenueType(data.venueType);
+    setTotalCapacity(data.totalCapacity);
     setIotSource(data.iotSource);
     setRefreshRate(data.refreshRate);
     setHvacControl(data.hvacControl);
@@ -36,6 +44,7 @@ export function AdminSettings({ data, onSave }: AdminSettingsProps) {
   }, [
     data.organizationName,
     data.venueType,
+    data.totalCapacity,
     data.iotSource,
     data.refreshRate,
     data.hvacControl,
@@ -43,16 +52,38 @@ export function AdminSettings({ data, onSave }: AdminSettingsProps) {
     data.energySource,
   ]);
 
-  const handleSave = () => {
-    onSave({
+  const handleSave = async () => {
+    const partial = {
       organizationName,
       venueType,
+      totalCapacity,
       iotSource,
       refreshRate,
       hvacControl,
       baselineKwh,
       energySource,
-    });
+    };
+    if (orgId != null) {
+      setSaving(true);
+      try {
+        const capacityNum = totalCapacity ? parseInt(String(totalCapacity), 10) : undefined;
+        await updateOrganization(orgId, {
+          ...(organizationName && { name: organizationName }),
+          ...(venueType && { org_type: venueType }),
+          ...(capacityNum != null && !Number.isNaN(capacityNum) && { total_capacity: capacityNum }),
+        });
+        onSave(partial);
+        showAlert("Settings saved successfully.", "success");
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : "Failed to save settings.";
+        showAlert(message, "error");
+      } finally {
+        setSaving(false);
+      }
+    } else {
+      onSave(partial);
+      showAlert("Settings saved locally.", "success");
+    }
   };
 
   return (
@@ -74,9 +105,10 @@ export function AdminSettings({ data, onSave }: AdminSettingsProps) {
         <button
           type="button"
           onClick={handleSave}
-          className="rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-500/20 transition hover:bg-emerald-600"
+          disabled={saving}
+          className="rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-500/20 transition hover:bg-emerald-600 disabled:opacity-50 disabled:hover:bg-emerald-500"
         >
-          Save changes
+          {saving ? "Saving…" : "Save changes"}
         </button>
       </div>
 
@@ -109,6 +141,17 @@ export function AdminSettings({ data, onSave }: AdminSettingsProps) {
                 </option>
               ))}
             </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">Total capacity</label>
+            <input
+              type="number"
+              min={0}
+              value={totalCapacity}
+              onChange={(e) => setTotalCapacity(e.target.value)}
+              placeholder="e.g. 500"
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
+            />
           </div>
         </div>
       </div>
