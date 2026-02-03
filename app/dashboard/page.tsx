@@ -3,7 +3,7 @@
 import { useRef, useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { fetchProfile, fetchOrganizations, fetchOrganization, fetchZones, fetchAlerts, fetchOrgAlerts, fetchCarbonStats, resolveAlert, createNotification, type User } from "../lib/api";
+import { fetchProfile, fetchOrganizations, fetchOrganization, fetchZones, fetchAlerts, fetchCarbonStats, resolveAlert, createNotification, type User } from "../lib/api";
 import { ZoneMap } from "./components/ZoneMap";
 import { ZoneHeatmapMap } from "./components/ZoneHeatmapMap";
 import { AlertCenter } from "./components/AlertCenter";
@@ -77,6 +77,31 @@ function formatRelativeTime(ms: number): string {
   if (min < 60) return `${min}m ago`;
   const hr = Math.floor(min / 60);
   return `${hr}h ago`;
+}
+
+/** Parse alert sub_heading for "Detected X/Y" or "X/Y people" → occupancy % (0–100). */
+function parseOccupancyFromAlert(subHeading: string | undefined): number | null {
+  if (!subHeading) return null;
+  const match = subHeading.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!match) return null;
+  const detected = parseInt(match[1], 10);
+  const capacity = parseInt(match[2], 10);
+  if (capacity <= 0) return null;
+  return Math.min(100, Math.round((detected / capacity) * 100));
+}
+
+/** Try to extract zone name from heading (e.g. "Overcrowding in Main Hall" → "Main Hall"). */
+function parseZoneNameFromHeading(heading: string | undefined): string | null {
+  if (!heading) return null;
+  const inMatch = heading.match(/\bin\s+(.+)$/i);
+  if (inMatch) return inMatch[1].trim();
+  return heading.trim() || null;
+}
+
+function densityToStatus(density: number): "low" | "critical" | "warning" {
+  if (density >= 90) return "critical";
+  if (density >= 70) return "warning";
+  return "low";
 }
 
 const containerVariants = {
@@ -154,8 +179,9 @@ export default function DashboardOverviewPage() {
     // Load Data — no auth gating; fetch everything; display selected org (or first)
     const loadData = async () => {
       if (cancelled) return;
-      const [orgsListResult, carbonResult] = await Promise.allSettled([
+      const [orgsListResult, alertsResult, carbonResult] = await Promise.allSettled([
         fetchOrganizations(),
+        fetchAlerts("OPEN"),
         fetchCarbonStats()
       ]);
 
@@ -200,6 +226,23 @@ export default function DashboardOverviewPage() {
 
       const orgLat = firstOrg ? parseFloat(firstOrg.latitude || "0") : 0;
       const orgLng = firstOrg ? parseFloat(firstOrg.longitude || "0") : 0;
+
+      // Map Alerts from GET /alerts/?status=OPEN (id, heading, sub_heading, status, created_at, updated_at)
+      const alerts = alertsResult.status === "fulfilled" ? alertsResult.value : null;
+      // Derive zone densities from alerts: parse "Detected X/Y" and match heading to zone name
+      const densityByZoneName: Record<string, number> = {};
+      if (Array.isArray(alerts)) {
+        for (const a of alerts) {
+          const occupancy = parseOccupancyFromAlert(a.sub_heading);
+          if (occupancy == null) continue;
+          const zoneName = parseZoneNameFromHeading(a.heading);
+          if (zoneName) {
+            // Keep latest or average; use latest for simplicity
+            densityByZoneName[zoneName] = occupancy;
+          }
+        }
+      }
+
       const mappedZones = zonesFromOrg.map((z: any, index: number) => {
         const lat = z.latitude != null || z.lat != null
           ? parseFloat(z.latitude || z.lat || "0")
@@ -207,11 +250,13 @@ export default function DashboardOverviewPage() {
         const lng = z.longitude != null || z.lng != null
           ? parseFloat(z.longitude || z.lng || "0")
           : orgLng + (index * 0.001);
+        const density = densityByZoneName[z.name] ?? 0;
+        const status = densityToStatus(density);
         return {
           id: String(z.id),
           name: z.name,
-          density: 0,
-          status: "low",
+          density,
+          status,
           lat,
           lng,
           ...z
@@ -220,17 +265,6 @@ export default function DashboardOverviewPage() {
       setRealZones(mappedZones);
       // Reset selected zone when org changes
       setSelectedZone(null);
-
-      // Map Alerts from GET /alerts/?status=OPEN (id, heading, sub_heading, status, created_at, updated_at)
-      let alerts: any[] | null = null;
-      if (orgIdToUse != null) {
-        try {
-          alerts = await fetchOrgAlerts(orgIdToUse, "OPEN");
-        } catch {
-          alerts = null;
-        }
-      }
-
       if (Array.isArray(alerts) && alerts.length > 0) {
         const mappedAlerts = alerts.map((a: any) => {
           const level: "critical" | "warning" | "success" = a.status === "CLOSED" ? "success" : "critical";
@@ -252,10 +286,10 @@ export default function DashboardOverviewPage() {
         setLiveAlerts([]);
       }
 
-      // Set Carbon
+      // Set Carbon (full response so we can use summary + recent_history for derived metrics)
       const carbon = carbonResult.status === "fulfilled" ? carbonResult.value : null;
-      if (carbon && carbon.summary) {
-        setCarbonStats(carbon.summary);
+      if (carbon) {
+        setCarbonStats({ ...carbon.summary, recent_history: carbon.recent_history });
       } else {
         setCarbonStats(null);
       }
@@ -362,6 +396,39 @@ export default function DashboardOverviewPage() {
       };
     });
   }, [liveAlerts]);
+
+  // Derived: average zone density from realZones (from alerts "Detected X/Y")
+  const avgDensity = useMemo(() => {
+    if (!realZones.length) return null;
+    const withDensity = realZones.filter((z) => z.density != null && z.density > 0);
+    if (withDensity.length === 0) return null;
+    const sum = withDensity.reduce((a, z) => a + z.density, 0);
+    return Math.round(sum / withDensity.length);
+  }, [realZones]);
+
+  // Derived: projected carbon saved this month from total_saved_all_time (simple linear extrapolation)
+  const projectedCarbonThisMonth = useMemo(() => {
+    const total = carbonStats?.total_saved_all_time;
+    if (total == null || typeof total !== "number") return null;
+    const now = new Date();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const dayOfMonth = now.getDate();
+    if (dayOfMonth <= 0) return null;
+    const projected = (total / dayOfMonth) * daysInMonth;
+    return Math.round(projected * 10) / 10;
+  }, [carbonStats?.total_saved_all_time]);
+
+  // Derived: efficiency from carbon (average_per_detection) or from recent_history if present
+  const efficiencyPercent = useMemo(() => {
+    const avg = carbonStats?.average_per_detection;
+    if (avg != null) return Math.round(Number(avg) * 100);
+    const history = carbonStats?.recent_history;
+    if (Array.isArray(history) && history.length > 0) {
+      const sum = history.reduce((a: number, h: any) => a + (Number(h.saved) ?? 0), 0);
+      return Math.round((sum / history.length) * 100);
+    }
+    return null;
+  }, [carbonStats?.average_per_detection, carbonStats?.recent_history]);
 
   // Derive "activity by hour" from alert timestamps (proxy for when venue is busy)
   const densityTrendFromAlerts: DensityTrendData | undefined = useMemo(() => {
@@ -709,21 +776,27 @@ export default function DashboardOverviewPage() {
                 <div className="relative flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-                      Avg (carbon)
+                      {avgDensity != null ? "Avg density" : "Avg efficiency"}
                     </p>
                     <p className="mt-2 flex items-baseline gap-2">
                       <span className="text-2xl font-bold tabular-nums tracking-tight text-slate-900">
-                        {carbonStats?.average_per_detection != null
-                          ? `${(Number(carbonStats.average_per_detection) * 100).toFixed(0)}%`
-                          : "—"}
+                        {avgDensity != null
+                          ? `${avgDensity}%`
+                          : efficiencyPercent != null
+                            ? `${efficiencyPercent}%`
+                            : "—"}
                       </span>
-                      <span className="text-sm text-slate-500">efficiency</span>
+                      <span className="text-sm text-slate-500">
+                        {avgDensity != null ? "from alerts" : "carbon"}
+                      </span>
                       <span className="text-sm font-semibold text-emerald-500">
-                        {carbonStats?.average_per_detection != null ? "From stats" : ""}
+                        {(avgDensity != null || efficiencyPercent != null) ? "Derived" : ""}
                       </span>
                     </p>
                     <p className="mt-1 text-[10px] text-slate-500">
-                      Carbon stats avg per detection (sahi / gemini)
+                      {avgDensity != null
+                        ? "From alert sub_heading (Detected X/Y)"
+                        : "Carbon avg per detection or recent_history"}
                     </p>
                   </div>
                   <span className="rounded-xl bg-slate-100/80 p-2.5 text-slate-600 backdrop-blur-sm">
@@ -740,19 +813,23 @@ export default function DashboardOverviewPage() {
                 <div className="relative flex items-start justify-between">
                   <div>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-600">
-                      Carbon Emission
+                      Carbon saved
                     </p>
                     <p className="mt-2 flex items-baseline gap-2">
                       <span className="text-2xl font-bold tabular-nums tracking-tight text-slate-900">
-                        {carbonStats?.total_saved_all_time?.toFixed(1) || "0"}
+                        {carbonStats?.total_saved_all_time != null
+                          ? Number(carbonStats.total_saved_all_time).toFixed(1)
+                          : "0"}
                       </span>
                       <span className="text-sm text-slate-600">kg</span>
                       <span className="text-sm font-semibold text-emerald-500">
-                        {carbonStats ? "Active" : "-"}
+                        {carbonStats ? "Live" : "—"}
                       </span>
                     </p>
                     <p className="mt-1 text-[10px] text-slate-500">
-                      Reduced vs baseline
+                      {projectedCarbonThisMonth != null
+                        ? `Projected this month: ~${projectedCarbonThisMonth} kg`
+                        : "Reduced vs baseline (from stats)"}
                     </p>
                   </div>
                   <span className="rounded-xl bg-emerald-100/80 p-2.5 text-emerald-600 backdrop-blur-sm">
